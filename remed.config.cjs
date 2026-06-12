@@ -9,6 +9,7 @@ module.exports = {
       cwd: projectRoot,
       interpreter: join(nodeRoot, "node.exe"),
       script: join(projectRoot, "dist\\app.js"),
+      node_args: ["--max-old-space-size=8192"],
       // ? Alternative config:
       // interpreter: "none",
       // script: join(nodeRoot, "npm.cmd"),
@@ -18,11 +19,14 @@ module.exports = {
       merge_logs: true,
       time: true,
       autorestart: true,
-      restart_delay: 5000, 
+      restart_delay: 5000,
       env : {
         PORT : 80,
-        HL7_PORT : 9000,
-        ASTM_PORT : 5000,
+        HL7_PORT : 9999,
+        ASTM_PORT: 5000,
+        UPLOADS_DIR: "C:\\remed_uploads",
+        BACKUPS_DIR: "C:\\remed_backups",
+        SQLITE_DB_PATH: "C:\\remed_data\\remed.db"
       }
     }
   ]
