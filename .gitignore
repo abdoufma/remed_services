@@ -1,0 +1,50 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Node / package manager artifacts
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+build/
+coverage/
+
+# Runtime logs and process files
+logs/
+*.log
+*.pid
+*.seed
+*.pid.lock
+
+# Environment and local machine overrides
+.env
+.env.*
+!.env.example
+*.local
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Windows / PowerShell temporary files
+Thumbs.db
+Desktop.ini
+*.tmp
+*.temp
+*.bak
+*.ps1xml
+
+# Archives generated while deploying or transferring scripts
+*.zip
+*.tar
+*.tar.gz
+*.7z
