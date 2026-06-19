@@ -8,7 +8,7 @@ module.exports = {
       name: "remed",
       cwd: projectRoot,
       interpreter: join(nodeRoot, "node.exe"),
-      script: join(projectRoot, "dist\\app.js"),
+      script: join(projectRoot, "dist\\app.cjs"),
       node_args: ["--max-old-space-size=8192"],
       // ? Alternative config:
       // interpreter: "none",
