@@ -222,14 +222,20 @@ function Remove-ExistingPm2Packages {
         }
 
         $source = $command.Source
-        if ($source.EndsWith('.ps1', [StringComparison]::OrdinalIgnoreCase)) {
-            $cmdSibling = Join-Path (Split-Path -Parent $source) 'npm.cmd'
-            if (Test-Path -LiteralPath $cmdSibling) {
-                $source = $cmdSibling
-            }
+        $extension = [IO.Path]::GetExtension($source)
+        if ($extension.Equals('.cmd', [StringComparison]::OrdinalIgnoreCase) -or
+            $extension.Equals('.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            [void]$npmCommands.Add($source)
+            continue
         }
 
-        [void]$npmCommands.Add($source)
+        $cmdSibling = Join-Path (Split-Path -Parent $source) 'npm.cmd'
+        if (Test-Path -LiteralPath $cmdSibling) {
+            [void]$npmCommands.Add($cmdSibling)
+            continue
+        }
+
+        Write-Host "Skipping npm command that cannot be started directly: $source"
     }
 
     foreach ($npm in $npmCommands) {
