@@ -667,17 +667,24 @@ function Assert-Pm2ServiceInstalledAndRunning {
     $service = Get-Service -Name PM2 -ErrorAction Stop
     if ($service.Status -ne 'Running') {
         Write-Host "PM2 service is $($service.Status). Starting it."
-        Start-Service -Name PM2
+        Start-Service -Name $service.Name
         $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-        $service = Get-Service -Name PM2 -ErrorAction Stop
+        $service = Get-Service -Name $service.Name -ErrorAction Stop
     }
 
     if ($service.Status -ne 'Running') {
         throw "PM2 service exists but is not running. Current status: $($service.Status)"
     }
 
-    $serviceDetails = Get-CimInstance Win32_Service -Filter "Name = 'PM2'" -ErrorAction Stop
-    Write-Host "PM2 service installed: Name=$($serviceDetails.Name), State=$($serviceDetails.State), StartName=$($serviceDetails.StartName)"
+    Write-Host "PM2 service installed: Name=$($service.Name), DisplayName=$($service.DisplayName), Status=$($service.Status), StartType=$($service.StartType)"
+
+    $escapedName = $service.Name.Replace('\', '\\').Replace("'", "''")
+    $serviceDetails = Get-CimInstance Win32_Service -Filter "Name = '$escapedName'" -ErrorAction Stop
+    if (-not $serviceDetails) {
+        throw "Get-Service sees PM2 service '$($service.Name)', but Win32_Service did not return service details."
+    }
+
+    Write-Host "PM2 service account: $($serviceDetails.StartName)"
     Write-Host "PM2 service PathName: $($serviceDetails.PathName)"
 }
 
