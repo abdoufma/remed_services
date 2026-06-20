@@ -27,6 +27,7 @@ logs/
 .env.*
 !.env.example
 *.local
+remed.generated.config.cjs
 
 # Editor and IDE files
 .idea/

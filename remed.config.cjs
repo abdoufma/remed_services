@@ -21,6 +21,7 @@ module.exports = {
       autorestart: true,
       restart_delay: 5000,
       env : {
+        DIR_NAME: projectRoot,
         PORT : 80,
         HL7_PORT : 9999,
         ASTM_PORT: 5000,
