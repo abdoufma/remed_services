@@ -263,6 +263,25 @@ function Remove-ExistingPm2Packages {
     }
 }
 
+function Stop-ExistingPm2ServiceAndDaemons {
+    $service = Get-Service -Name PM2 -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -ne 'Stopped') {
+        Write-Host 'Stopping existing PM2 service.'
+        Stop-Service -Name PM2 -Force -ErrorAction SilentlyContinue
+        $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+    }
+
+    Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.CommandLine -match '\\node_modules\\pm2\\lib\\Daemon\.js' -or
+            $_.CommandLine -match '\\node_modules\\pm2-windows-service\\'
+        } |
+        ForEach-Object {
+            Write-Host "Stopping existing PM2-related node process: PID $($_.ProcessId)"
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+}
+
 function New-CleanEnvironment {
     param([string] $ExtraPathPrefix)
 
@@ -423,6 +442,77 @@ function sanitizeEnvForSpawn(env) {
     Set-Content -LiteralPath $clientJs -Value $clientText -NoNewline
 }
 
+function Repair-Pm2WindowsNamedPipes {
+    $pathsJs = 'C:\node-global\node_modules\pm2\paths.js'
+    $sockJs = 'C:\node-global\node_modules\pm2\node_modules\pm2-axon\lib\sockets\sock.js'
+
+    if (Test-Path -LiteralPath $pathsJs) {
+        $backup = "$pathsJs.bak-before-windows-pipe-repair"
+        if (-not (Test-Path -LiteralPath $backup)) {
+            Copy-Item -LiteralPath $pathsJs -Destination $backup
+        }
+
+        $pathsText = Get-Content -LiteralPath $pathsJs -Raw
+        if ($pathsText -notmatch 'pipeNamePrefix') {
+            $windowsPipeBlock = @'
+if (process.platform === 'win32' ||
+      process.platform === 'win64') {
+    var pipeNamePrefix = 'pm2-' + String(PM2_HOME || 'default')
+      .replace(/^[a-zA-Z]:/, '')
+      .replace(/[^a-zA-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase();
+    if (!pipeNamePrefix || pipeNamePrefix === 'pm2-') pipeNamePrefix = 'pm2-default';
+    pm2_file_stucture.DAEMON_RPC_PORT = '\\\\.\\pipe\\' + pipeNamePrefix + '-rpc.sock';
+    pm2_file_stucture.DAEMON_PUB_PORT = '\\\\.\\pipe\\' + pipeNamePrefix + '-pub.sock';
+    pm2_file_stucture.INTERACTOR_RPC_PORT = '\\\\.\\pipe\\' + pipeNamePrefix + '-interactor.sock';
+  }
+'@
+            $pathsText = $pathsText -replace "(?s)if \(process\.platform === 'win32'\s*\|\|\s*process\.platform === 'win64'\) \{\s*//@todo instead of static unique rpc/pub file custom with PM2_HOME or UID\s*pm2_file_stucture\.DAEMON_RPC_PORT = '\\\\\\\\.\\\\pipe\\\\rpc\.sock';\s*pm2_file_stucture\.DAEMON_PUB_PORT = '\\\\\\\\.\\\\pipe\\\\pub\.sock';\s*pm2_file_stucture\.INTERACTOR_RPC_PORT = '\\\\\\\\.\\\\pipe\\\\interactor\.sock';\s*\}", $windowsPipeBlock
+            Set-Content -LiteralPath $pathsJs -Value $pathsText -NoNewline
+        }
+    }
+
+    if (Test-Path -LiteralPath $sockJs) {
+        $backup = "$sockJs.bak-before-windows-pipe-acl"
+        if (-not (Test-Path -LiteralPath $backup)) {
+            Copy-Item -LiteralPath $sockJs -Destination $backup
+        }
+
+        $sockText = Get-Content -LiteralPath $sockJs -Raw
+        if ($sockText -notmatch 'function listenWithWindowsPipeAcl') {
+            $pipeAclHelper = @'
+function listenWithWindowsPipeAcl(server, port, host, fn) {
+  if (process.platform === 'win32' && typeof port === 'string' && /^\\\\[.?]\\pipe\\/.test(port)) {
+    return server.listen({ path: port, readableAll: true, writableAll: true }, fn);
+  }
+
+  return server.listen(port, host, fn);
+}
+
+'@
+            $sockText = $sockText -replace "var fs = require\('fs'\);\r?\n", "var fs = require('fs');`r`n`r`n$pipeAclHelper"
+        }
+
+        $sockText = $sockText.Replace('self.server.listen(port, host, fn);', 'listenWithWindowsPipeAcl(self.server, port, host, fn);')
+        $sockText = $sockText.Replace('this.server.listen(port, host, fn);', 'listenWithWindowsPipeAcl(this.server, port, host, fn);')
+        Set-Content -LiteralPath $sockJs -Value $sockText -NoNewline
+    }
+}
+
+function Set-Pm2DirectoryAcl {
+    param([Parameter(Mandatory)] [string[]] $Paths)
+
+    $currentUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    foreach ($path in $Paths) {
+        if (-not (Test-Path -LiteralPath $path)) {
+            continue
+        }
+
+        icacls $path /grant "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*${currentUserSid}:(OI)(CI)M" | Out-Null
+    }
+}
+
 function Repair-Pm2WindowsServiceEnvironmentSpawn {
     $serviceRoot = 'C:\node-global\node_modules\pm2-windows-service'
     $launcher = Join-Path $serviceRoot 'bin\pm2-service-install'
@@ -519,6 +609,8 @@ try {
         }
     }
 
+    Stop-ExistingPm2ServiceAndDaemons
+
     Write-Host 'Removing existing PM2 packages from currently available npm/Bun globals.'
     Remove-ExistingPm2Packages
 
@@ -533,6 +625,7 @@ try {
     $npmPrefix = 'C:\node-global'
     $pm2Home = 'C:\pm2\.pm2'
     New-Item -ItemType Directory -Force -Path $npmPrefix, $pm2Home | Out-Null
+    Set-Pm2DirectoryAcl -Paths @($npmPrefix, 'C:\pm2', $pm2Home)
 
     Write-Host 'Setting npm global prefix to C:\node-global'
     Invoke-NpmGlobal -NpmCmd $nodeInstall.NpmCmd -Arguments @('config', 'set', 'prefix', $npmPrefix, '--location', 'global')
@@ -559,6 +652,7 @@ try {
     Write-Host 'Installing PM2 with the global Node install.'
     Invoke-NpmGlobal -NpmCmd $nodeInstall.NpmCmd -Arguments @('install', '-g', 'pm2')
     Repair-Pm2EnvironmentSpawn
+    Repair-Pm2WindowsNamedPipes
 
     Copy-Item -LiteralPath $nodeInstall.NodeExe -Destination 'C:\node-global\node.exe' -Force
 
