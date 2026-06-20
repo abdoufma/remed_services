@@ -269,11 +269,17 @@ function Remove-ExistingPm2Packages {
     }
 }
 
+function Get-Pm2WindowsService {
+    return Get-Service -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq 'PM2' -or $_.DisplayName -eq 'PM2' } |
+        Select-Object -First 1
+}
+
 function Stop-ExistingPm2ServiceAndDaemons {
-    $service = Get-Service -Name PM2 -ErrorAction SilentlyContinue
+    $service = Get-Pm2WindowsService
     if ($service -and $service.Status -ne 'Stopped') {
-        Write-Host 'Stopping existing PM2 service.'
-        Stop-Service -Name PM2 -Force -ErrorAction SilentlyContinue
+        Write-Host "Stopping existing PM2 service: $($service.Name)"
+        Stop-Service -Name $service.Name -Force -ErrorAction SilentlyContinue
         $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
 
@@ -463,7 +469,10 @@ function sanitizeEnvForSpawn(env) {
 
 function Repair-Pm2WindowsNamedPipes {
     $pathsJs = 'C:\node-global\node_modules\pm2\paths.js'
-    $sockJs = 'C:\node-global\node_modules\pm2\node_modules\pm2-axon\lib\sockets\sock.js'
+    $sockJsCandidates = @(
+        'C:\node-global\node_modules\pm2\node_modules\pm2-axon\lib\sockets\sock.js',
+        'C:\node-global\node_modules\pm2\modules\pm2-axon\lib\sockets\sock.js'
+    )
 
     if (Test-Path -LiteralPath $pathsJs) {
         $backup = "$pathsJs.bak-before-windows-pipe-repair"
@@ -492,7 +501,12 @@ if (process.platform === 'win32' ||
         }
     }
 
-    if (Test-Path -LiteralPath $sockJs) {
+    $patchedSockCount = 0
+    foreach ($sockJs in $sockJsCandidates) {
+        if (-not (Test-Path -LiteralPath $sockJs)) {
+            continue
+        }
+
         $backup = "$sockJs.bak-before-windows-pipe-acl"
         if (-not (Test-Path -LiteralPath $backup)) {
             Copy-Item -LiteralPath $sockJs -Destination $backup
@@ -516,6 +530,11 @@ function listenWithWindowsPipeAcl(server, port, host, fn) {
         $sockText = $sockText.Replace('self.server.listen(port, host, fn);', 'listenWithWindowsPipeAcl(self.server, port, host, fn);')
         $sockText = $sockText.Replace('this.server.listen(port, host, fn);', 'listenWithWindowsPipeAcl(this.server, port, host, fn);')
         Set-Content -LiteralPath $sockJs -Value $sockText -NoNewline
+        $patchedSockCount++
+    }
+
+    if ($patchedSockCount -eq 0) {
+        throw 'Could not find PM2 pm2-axon sock.js to patch for Windows pipe ACLs.'
     }
 }
 
@@ -664,7 +683,11 @@ pm2ws.install('PM2', true).then(() => {
 }
 
 function Assert-Pm2ServiceInstalledAndRunning {
-    $service = Get-Service -Name PM2 -ErrorAction Stop
+    $service = Get-Pm2WindowsService
+    if (-not $service) {
+        throw 'PM2 service was not found by service name or display name.'
+    }
+
     if ($service.Status -ne 'Running') {
         Write-Host "PM2 service is $($service.Status). Starting it."
         Start-Service -Name $service.Name
