@@ -329,6 +329,19 @@ function New-CleanEnvironment {
         $clean['Path'] = "$ExtraPathPrefix;$($clean['Path'])"
     }
 
+    foreach ($key in @('PM2_HOME', 'PM2_SERVICE_PM2_DIR')) {
+        $processValue = [Environment]::GetEnvironmentVariable($key, 'Process')
+        if (-not [string]::IsNullOrWhiteSpace($processValue)) {
+            $clean[$key] = $processValue
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('PM2_SERVICE_SCRIPTS', 'Process'))) {
+        [void]$clean.Remove('PM2_SERVICE_SCRIPTS')
+        [void]$clean.Remove('PM2_SERVICE_CONFIG')
+        [void]$clean.Remove('PM2_SERVICE_SCRIPT')
+    }
+
     return $clean
 }
 
@@ -506,6 +519,25 @@ function listenWithWindowsPipeAcl(server, port, host, fn) {
     }
 }
 
+function Assert-Pm2WindowsNamedPipeRepair {
+    param([Parameter(Mandatory)] [string] $NodeExe)
+
+    $checkScript = @'
+process.env.PM2_HOME = 'C:\\pm2\\.pm2';
+const paths = require('C:\\node-global\\node_modules\\pm2\\paths')(process.env.PM2_HOME);
+console.log('PM2 daemon RPC pipe: ' + paths.DAEMON_RPC_PORT);
+if (/^\\\\\.\\pipe\\rpc\.sock$/i.test(paths.DAEMON_RPC_PORT)) {
+  console.error('PM2 is still using the stock Windows rpc.sock pipe.');
+  process.exit(2);
+}
+'@
+
+    $exitCode = Invoke-CleanProcess -FilePath $NodeExe -Arguments @('-e', $checkScript) -ExtraPathPrefix 'C:\Program Files\nodejs;C:\node-global'
+    if ($exitCode -ne 0) {
+        throw 'PM2 Windows named pipe repair did not apply.'
+    }
+}
+
 function Set-Pm2DirectoryAcl {
     param([Parameter(Mandatory)] [string[]] $Paths)
 
@@ -517,6 +549,27 @@ function Set-Pm2DirectoryAcl {
 
         icacls $path /grant "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*${currentUserSid}:(OI)(CI)M" | Out-Null
     }
+}
+
+function Set-Pm2EnvironmentVariables {
+    param(
+        [Parameter(Mandatory)] [string] $Pm2Home,
+        [Parameter(Mandatory)] [string] $Pm2ModuleDir
+    )
+
+    foreach ($scope in @('Machine', 'User')) {
+        [Environment]::SetEnvironmentVariable('PM2_HOME', $Pm2Home, $scope)
+        [Environment]::SetEnvironmentVariable('PM2_SERVICE_PM2_DIR', $Pm2ModuleDir, $scope)
+        [Environment]::SetEnvironmentVariable('PM2_SERVICE_SCRIPTS', $null, $scope)
+        [Environment]::SetEnvironmentVariable('PM2_SERVICE_CONFIG', $null, $scope)
+        [Environment]::SetEnvironmentVariable('PM2_SERVICE_SCRIPT', $null, $scope)
+    }
+
+    $env:PM2_HOME = $Pm2Home
+    $env:PM2_SERVICE_PM2_DIR = $Pm2ModuleDir
+    Remove-Item Env:PM2_SERVICE_SCRIPTS -ErrorAction SilentlyContinue
+    Remove-Item Env:PM2_SERVICE_CONFIG -ErrorAction SilentlyContinue
+    Remove-Item Env:PM2_SERVICE_SCRIPT -ErrorAction SilentlyContinue
 }
 
 function Repair-Pm2WindowsServiceEnvironmentSpawn {
@@ -591,6 +644,25 @@ function exec(command, options, callback) {
     }
 }
 
+function Install-Pm2WindowsService {
+    param([Parameter(Mandatory)] [string] $NodeExe)
+
+    $installScript = @'
+const pm2ws = require('C:\\node-global\\node_modules\\pm2-windows-service');
+pm2ws.install('PM2', true).then(() => {
+  console.log('PM2 service installed and started.');
+}, err => {
+  console.error(err && (err.stack || err.message) || err);
+  process.exit((err && err.code) || 1);
+});
+'@
+
+    $exitCode = Invoke-CleanProcess -FilePath $NodeExe -Arguments @('-e', $installScript) -ExtraPathPrefix 'C:\Program Files\nodejs;C:\node-global'
+    if ($exitCode -ne 0) {
+        throw "pm2-windows-service install failed with exit code $exitCode"
+    }
+}
+
 try {
     if (-not (Test-IsAdministrator)) {
         throw 'Run this script from an elevated PowerShell session.'
@@ -659,6 +731,7 @@ try {
     Invoke-NpmGlobal -NpmCmd $nodeInstall.NpmCmd -Arguments @('install', '-g', 'pm2')
     Repair-Pm2EnvironmentSpawn
     Repair-Pm2WindowsNamedPipes
+    Assert-Pm2WindowsNamedPipeRepair -NodeExe $nodeInstall.NodeExe
 
     Copy-Item -LiteralPath $nodeInstall.NodeExe -Destination 'C:\node-global\node.exe' -Force
 
@@ -667,29 +740,15 @@ try {
         throw "PM2 module directory was not found after install: $pm2ModuleDir"
     }
 
-    Write-Host 'Setting machine-level PM2 environment variables.'
-    [Environment]::SetEnvironmentVariable('PM2_HOME', $pm2Home, 'Machine')
-    [Environment]::SetEnvironmentVariable('PM2_SERVICE_PM2_DIR', $pm2ModuleDir, 'Machine')
-    [Environment]::SetEnvironmentVariable('PM2_SERVICE_SCRIPTS', $null, 'Machine')
-
-    $env:PM2_HOME = $pm2Home
-    $env:PM2_SERVICE_PM2_DIR = $pm2ModuleDir
-    Remove-Item Env:PM2_SERVICE_SCRIPTS -ErrorAction SilentlyContinue
+    Write-Host 'Setting PM2 environment variables.'
+    Set-Pm2EnvironmentVariables -Pm2Home $pm2Home -Pm2ModuleDir $pm2ModuleDir
 
     Write-Host 'Installing pm2-windows-service.'
     Invoke-NpmGlobal -NpmCmd $nodeInstall.NpmCmd -Arguments @('install', '-g', 'pm2-windows-service', '--ignore-scripts')
     Repair-Pm2WindowsServiceEnvironmentSpawn
 
-    $serviceInstaller = 'C:\node-global\pm2-service-install.cmd'
-    if (-not (Test-Path -LiteralPath $serviceInstaller)) {
-        throw "pm2-service-install was not found after pm2-windows-service install: $serviceInstaller"
-    }
-
-    Write-Host 'Running: pm2-service-install -n PM2'
-    $serviceExitCode = Invoke-CleanInteractiveProcess -FilePath $serviceInstaller -Arguments @('-n', 'PM2') -ExtraPathPrefix 'C:\Program Files\nodejs;C:\node-global'
-    if ($serviceExitCode -ne 0) {
-        throw "pm2-service-install failed with exit code $serviceExitCode"
-    }
+    Write-Host 'Installing PM2 service non-interactively.'
+    Install-Pm2WindowsService -NodeExe $nodeInstall.NodeExe
 
     Write-Host 'Verifying PM2 service.'
     Get-Service -Name PM2 -ErrorAction Stop | Select-Object Name, Status, StartType
