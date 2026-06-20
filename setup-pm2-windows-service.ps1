@@ -663,6 +663,24 @@ pm2ws.install('PM2', true).then(() => {
     }
 }
 
+function Assert-Pm2ServiceInstalledAndRunning {
+    $service = Get-Service -Name PM2 -ErrorAction Stop
+    if ($service.Status -ne 'Running') {
+        Write-Host "PM2 service is $($service.Status). Starting it."
+        Start-Service -Name PM2
+        $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        $service = Get-Service -Name PM2 -ErrorAction Stop
+    }
+
+    if ($service.Status -ne 'Running') {
+        throw "PM2 service exists but is not running. Current status: $($service.Status)"
+    }
+
+    $serviceDetails = Get-CimInstance Win32_Service -Filter "Name = 'PM2'" -ErrorAction Stop
+    Write-Host "PM2 service installed: Name=$($serviceDetails.Name), State=$($serviceDetails.State), StartName=$($serviceDetails.StartName)"
+    Write-Host "PM2 service PathName: $($serviceDetails.PathName)"
+}
+
 try {
     if (-not (Test-IsAdministrator)) {
         throw 'Run this script from an elevated PowerShell session.'
@@ -751,7 +769,8 @@ try {
     Install-Pm2WindowsService -NodeExe $nodeInstall.NodeExe
 
     Write-Host 'Verifying PM2 service.'
-    Get-Service -Name PM2 -ErrorAction Stop | Select-Object Name, Status, StartType
+    Assert-Pm2ServiceInstalledAndRunning
+    Write-Host 'Verifying C:\node-global PM2 command.'
     & 'C:\node-global\pm2.cmd' --version
 } finally {
     Stop-Transcript | Out-Null
