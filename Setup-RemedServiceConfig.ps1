@@ -49,14 +49,14 @@ function Replace-ConstString {
     $literal = ConvertTo-JavaScriptStringLiteralValue -Value $Value
     $pattern = '(?m)^(\s*const\s+{0}\s*=\s*)"(?:(?:\\.)|[^"\\])*"(\s*;)' -f [Regex]::Escape($Name)
 
+    if (-not [Regex]::IsMatch($Content, $pattern)) {
+        throw "Could not find const string '$Name' in template: $TemplatePath"
+    }
+
     $result = [Regex]::Replace($Content, $pattern, {
         param($match)
         return $match.Groups[1].Value + '"' + $literal + '"' + $match.Groups[2].Value
     }, 1)
-
-    if ($result -eq $Content) {
-        throw "Could not find const string '$Name' in template: $TemplatePath"
-    }
 
     return $result
 }
@@ -71,14 +71,14 @@ function Replace-EnvString {
     $literal = ConvertTo-JavaScriptStringLiteralValue -Value $Value
     $pattern = '(\b{0}\s*:\s*)"(?:(?:\\.)|[^"\\])*"' -f [Regex]::Escape($Name)
 
+    if (-not [Regex]::IsMatch($Content, $pattern)) {
+        throw "Could not find env string '$Name' in template: $TemplatePath"
+    }
+
     $result = [Regex]::Replace($Content, $pattern, {
         param($match)
         return $match.Groups[1].Value + '"' + $literal + '"'
     }, 1)
-
-    if ($result -eq $Content) {
-        throw "Could not find env string '$Name' in template: $TemplatePath"
-    }
 
     return $result
 }
