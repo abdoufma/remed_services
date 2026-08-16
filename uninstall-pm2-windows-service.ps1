@@ -337,9 +337,9 @@ try {
             }
         }
     } else {
-        foreach ($home in @($v1Pm2Home, $v2Pm2Home)) {
-            if (Test-Path -LiteralPath $home) {
-                Write-Host "PM2 data was retained at $home. Use -RemoveData to delete it."
+        foreach ($pm2DataHome in @($v1Pm2Home, $v2Pm2Home)) {
+            if (Test-Path -LiteralPath $pm2DataHome) {
+                Write-Host "PM2 data was retained at $pm2DataHome. Use -RemoveData to delete it."
             }
         }
     }
