@@ -435,6 +435,39 @@ function Invoke-NpmGlobal {
     }
 }
 
+function Install-Pm2ServiceCli {
+    $npmPm2Cmd = 'C:\node-global\pm2.cmd'
+    $pm2CliCmd = 'C:\node-global\pm2-cli.cmd'
+    $sourceWrapper = Join-Path $PSScriptRoot 'pm2-service-cli.ps1'
+    $installedWrapper = 'C:\node-global\pm2-service-cli.ps1'
+
+    foreach ($required in @($npmPm2Cmd, $sourceWrapper)) {
+        if (-not (Test-Path -LiteralPath $required)) {
+            throw "Cannot install the service-safe PM2 command; required file was not found: $required"
+        }
+    }
+
+    Copy-Item -LiteralPath $npmPm2Cmd -Destination $pm2CliCmd -Force
+    Copy-Item -LiteralPath $sourceWrapper -Destination $installedWrapper -Force
+
+    $cmdWrapper = @'
+@ECHO OFF
+PowerShell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "C:\node-global\pm2-service-cli.ps1" %*
+EXIT /B %ERRORLEVEL%
+'@
+    Set-Content -LiteralPath $npmPm2Cmd -Value $cmdWrapper -Encoding Ascii
+
+    $npmPm2PowerShell = 'C:\node-global\pm2.ps1'
+    if (Test-Path -LiteralPath $npmPm2PowerShell) {
+        $powerShellWrapper = @'
+#!/usr/bin/env powershell
+& 'C:\node-global\pm2-service-cli.ps1' @args
+exit $LASTEXITCODE
+'@
+        Set-Content -LiteralPath $npmPm2PowerShell -Value $powerShellWrapper -Encoding UTF8
+    }
+}
+
 function Repair-Pm2EnvironmentSpawn {
     $clientJs = 'C:\node-global\node_modules\pm2\lib\Client.js'
     if (-not (Test-Path -LiteralPath $clientJs)) {
@@ -800,7 +833,9 @@ try {
 
     Write-Host 'Verifying PM2 service.'
     Assert-Pm2ServiceInstalledAndRunning
-    Write-Host 'Verifying C:\node-global PM2 command.'
+    Write-Host 'Installing the service-safe PM2 admin command.'
+    Install-Pm2ServiceCli
+    Write-Host 'Verifying the service-safe C:\node-global PM2 command.'
     & 'C:\node-global\pm2.cmd' --version
 } finally {
     Stop-Transcript | Out-Null
